@@ -1,0 +1,12 @@
+# Reference constraints, intentionally not a deployable manifest with fake secrets.
+apiVersion: playstorehb.docs/v1
+kind: DeploymentRequirements
+spec:
+  replicasMinimum: 2
+  tlsRequired: true
+  databaseMigrations: single-writer-job
+  objectStorage:
+    quarantinePrivate: true
+    publishedImmutable: true
+  signingKeyInCluster: false
+  auditLogRetentionDays: 365

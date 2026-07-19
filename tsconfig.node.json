@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist/node",
+    "rootDir": ".",
+    "declaration": true,
+    "sourceMap": true
+  },
+  "include": [
+    "core/src/**/*.ts",
+    "apps/catalog-api/src/**/*.ts",
+    "tools/**/*.ts"
+  ],
+  "exclude": ["**/*.test.ts", "node_modules", "dist"]
+}

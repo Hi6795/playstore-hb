@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+set -eu
+cd "$(dirname "$0")/.."
+: "${OO_PS4_TOOLCHAIN:?OO_PS4_TOOLCHAIN is required. See docs/PS4_BUILD.md}"
+command -v make >/dev/null
+command -v clang++ >/dev/null
+command -v ld.lld >/dev/null
+exec make -C apps/ps4-client all

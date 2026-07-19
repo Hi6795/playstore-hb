@@ -1,0 +1,34 @@
+name: ci
+on: [push, pull_request]
+permissions: { contents: read }
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with: { version: 11.9.0 }
+      - uses: actions/setup-node@v5
+        with: { node-version: 24.14.0, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm run license-notices
+      - name: Validate empty production catalog
+        run: pnpm publisher validate content/production/catalog.json
+      - name: Development signing contract
+        run: |
+          node scripts/generate-dev-keys.mjs
+          PLAYSTOREHB_SIGNING_KEY_PATH=content/development/keys/DEVELOPMENT-ONLY-private.pem pnpm publisher sign-catalog --catalog content/development/catalog.json
+          PLAYSTOREHB_PUBLIC_KEY_PATH=content/development/keys/development-local-public.pem pnpm publisher verify-catalog --catalog content/development/catalog.json
+      - name: Secret-pattern scan
+        run: '! git grep -nE "BEGIN (OPENSSH|RSA|PRIVATE) PRIVATE KEY|AKIA[0-9A-Z]{16}" -- ":(exclude)tests/**" ":(exclude)scripts/generate-dev-keys.mjs"'
+  ps4-self-hosted:
+    if: ${{ false }}
+    runs-on: [self-hosted, openorbis]
+    steps:
+      - uses: actions/checkout@v5
+      - run: ./scripts/build-ps4
+      - run: echo 'Artifact is PS4 build produced but not hardware tested.'

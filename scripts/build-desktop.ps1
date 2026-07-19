@@ -1,0 +1,1 @@
+$ErrorActionPreference='Stop'; Set-Location -LiteralPath (Split-Path -Parent $PSScriptRoot); pnpm build:desktop; Write-Host 'Desktop web assets: dist/desktop-preview. Run pnpm desktop to launch Electron.'

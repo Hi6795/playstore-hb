@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "catalog_version": "2026.07.18.9001",
+  "catalog_sequence": 9001,
+  "generated_at": "2026-07-18T00:00:00.000Z",
+  "expires_at": "2030-07-18T00:00:00.000Z",
+  "minimum_client_version": "0.1.0",
+  "key_id": "development-local",
+  "channel": "development",
+  "games": []
+}

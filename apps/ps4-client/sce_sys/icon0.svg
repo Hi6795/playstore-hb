@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Playstore HB application icon</title>
+  <desc id="desc">An original cyan storefront download container with a purple geometric HB badge</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#10141c"/>
+      <stop offset="1" stop-color="#201832"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#26daeb"/>
+      <stop offset="0.52" stop-color="#3e74ff"/>
+      <stop offset="1" stop-color="#9750e8"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="92" fill="url(#background)"/>
+  <circle cx="414" cy="100" r="150" fill="#3e74ff" opacity="0.10"/>
+  <circle cx="85" cy="440" r="180" fill="#9750e8" opacity="0.09"/>
+  <path d="M100 211h312l-27 186H127zM148 211l32-93h152l32 93" fill="none" stroke="url(#accent)" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M256 102v176m-61-59 61 59 61-59" fill="none" stroke="#eafcff" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="282" y="325" width="151" height="104" rx="24" fill="#171b26" stroke="#a858ef" stroke-width="12"/>
+  <g fill="#f7f8ff">
+    <path d="M309 350h12v21h22v-21h12v55h-12v-22h-22v22h-12z"/>
+    <path d="M369 350h28c16 0 25 7 25 20 0 7-3 12-9 16 7 3 11 9 11 17 0 15-10 22-28 22h-27zm13 11v19h13c9 0 14-3 14-10 0-6-5-9-14-9zm0 29v23h15c10 0 15-4 15-12 0-7-5-11-15-11z" transform="translate(0 -10)"/>
+  </g>
+  <rect x="82" y="454" width="348" height="8" rx="4" fill="url(#accent)"/>
+</svg>

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "catalog_version": "2026.07.18.1",
+  "catalog_sequence": 0,
+  "generated_at": "2026-07-18T00:00:00.000Z",
+  "expires_at": "2027-07-18T00:00:00.000Z",
+  "minimum_client_version": "0.1.0",
+  "key_id": "production-key-not-provisioned",
+  "channel": "stable",
+  "games": []
+}

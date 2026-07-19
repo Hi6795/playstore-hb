@@ -1,0 +1,8 @@
+packages:
+  - apps/*
+  - core
+  - tools/*
+allowBuilds:
+  electron: true
+  esbuild: true
+  sharp: true

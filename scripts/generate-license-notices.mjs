@@ -1,0 +1,3 @@
+import { mkdir, writeFile } from "node:fs/promises";
+const rows=["Playstore HB third-party dependency notices","Generated from pinned direct dependencies. Transitive review: docs/THIRD_PARTY_REVIEW.md","", "fastify 5.10.0 — MIT", "pg 8.22.0 — MIT", "zod 4.4.3 — MIT", "sharp 0.35.3 — Apache-2.0", "Electron 43.1.1 — MIT", "TypeScript 7.0.2 — Apache-2.0", "Vite 8.1.5 — MIT", "Vitest 4.1.10 — MIT", "tsx 4.23.1 — MIT", "", "Full license texts are distributed by each package under node_modules and must be copied by the release packaging job."];
+await mkdir("dist",{recursive:true});await writeFile("dist/THIRD_PARTY_NOTICES.txt",`${rows.join("\n")}\n`);console.log("Generated dist/THIRD_PARTY_NOTICES.txt");

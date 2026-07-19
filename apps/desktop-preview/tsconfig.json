@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "module": "ESNext", "moduleResolution": "Bundler", "lib": ["ES2024", "DOM", "DOM.Iterable"], "types": [] },
+  "include": ["src/**/*.ts", "vite.config.ts", "../../core/src/ui.ts"]
+}

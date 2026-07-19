@@ -1,0 +1,41 @@
+{
+  "name": "playstore-hb",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.9.0",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "build": "pnpm build:server && pnpm build:desktop && pnpm build:admin",
+    "build:server": "tsc -p tsconfig.node.json",
+    "build:desktop": "vite build --config apps/desktop-preview/vite.config.ts",
+    "build:admin": "vite build --config apps/admin-web/vite.config.ts",
+    "dev:api": "tsx apps/catalog-api/src/server.ts",
+    "dev:desktop": "vite --config apps/desktop-preview/vite.config.ts",
+    "dev:admin": "vite --config apps/admin-web/vite.config.ts",
+    "desktop": "electron apps/desktop-preview/electron/main.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc -p tsconfig.node.json --noEmit && tsc -p apps/desktop-preview/tsconfig.json --noEmit && tsc -p apps/admin-web/tsconfig.json --noEmit",
+    "format:check": "node scripts/check-format.mjs",
+    "publisher": "tsx tools/publisher-cli/src/cli.ts",
+    "catalog:validate": "tsx tools/publisher-cli/src/cli.ts validate",
+    "benchmark:catalog": "tsx scripts/benchmark-catalog.ts",
+    "license-notices": "node scripts/generate-license-notices.mjs"
+  },
+  "dependencies": {
+    "fastify": "5.10.0",
+    "pg": "8.22.0",
+    "sharp": "0.35.3",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "@types/pg": "8.20.0",
+    "electron": "43.1.1",
+    "tsx": "4.23.1",
+    "typescript": "7.0.2",
+    "vite": "8.1.5",
+    "vitest": "4.1.10"
+  }
+}

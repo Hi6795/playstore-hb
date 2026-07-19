@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+set -eu
+cd "$(dirname "$0")/.."
+command -v node >/dev/null || { echo 'Node.js 24+ is required.' >&2; exit 1; }
+command -v pnpm >/dev/null || { echo 'pnpm 11 is required.' >&2; exit 1; }
+[ -f .env ] || cp .env.example .env
+pnpm install --frozen-lockfile
+node scripts/generate-dev-keys.mjs
+command -v docker >/dev/null || echo 'Warning: Docker is missing; container services are unavailable.' >&2

@@ -1,0 +1,5 @@
+import { readFile,readdir } from "node:fs/promises";import { execFileSync } from "node:child_process";import { join } from "node:path";
+async function walk(directory){const output=[];for(const entry of await readdir(directory,{withFileTypes:true})){if(["node_modules","dist","build",".git","work","outputs"].includes(entry.name))continue;const path=join(directory,entry.name);if(entry.isDirectory())output.push(...await walk(path));else output.push(path.replaceAll("\\","/"));}return output;}
+let files;try{files=execFileSync("git",["ls-files"],{encoding:"utf8",stdio:["ignore","pipe","ignore"]}).split(/\r?\n/).filter(Boolean);}catch{files=await walk(".");}files=files.filter((f)=>!f.endsWith(".png")&&!f.endsWith("pnpm-lock.yaml"));const bad=[];
+for(const file of files){const text=await readFile(file,"utf8").catch(()=>null);if(text===null)continue;if(/[ \t]+$/m.test(text)||(!text.endsWith("\n")&&!file.endsWith(".svg")))bad.push(file);}
+if(bad.length){console.error(`Formatting check failed: ${bad.join(", ")}`);process.exit(1);}console.log(`Formatting check passed for ${files.length} text files.`);
