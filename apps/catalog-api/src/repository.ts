@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import type { AuditEvent, PublishedCatalog, Repository, Submission } from "./model.js";
+import { runMigrations } from "./migrations.js";
 
 const emptyCatalog: PublishedCatalog = { manifest: { schema_version: 1, catalog_version: "2026.07.18.1", catalog_sequence: 0, generated_at: "2026-07-18T00:00:00.000Z", expires_at: "2027-07-18T00:00:00.000Z", minimum_client_version: "0.1.0", key_id: "production-key-not-provisioned", channel: "stable", games: [] }, signature: "" };
 
@@ -33,8 +34,5 @@ export class PostgresRepository implements Repository {
 }
 
 export async function migrate(client: Pool | PoolClient): Promise<void> {
-  await client.query(`CREATE TABLE IF NOT EXISTS submissions(id text PRIMARY KEY, document jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
-CREATE TABLE IF NOT EXISTS audit_log(id uuid PRIMARY KEY, at timestamptz NOT NULL, actor text NOT NULL, action text NOT NULL, resource text NOT NULL, request_id text NOT NULL, details jsonb NOT NULL);
-CREATE TABLE IF NOT EXISTS published_catalog(sequence bigint PRIMARY KEY, manifest jsonb NOT NULL, signature text NOT NULL, published_at timestamptz NOT NULL DEFAULT now());
-CREATE TABLE IF NOT EXISTS idempotency_keys(scope text NOT NULL, key text NOT NULL, response jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(scope,key));`);
+  await runMigrations(client);
 }
