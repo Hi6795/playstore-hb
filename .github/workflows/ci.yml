@@ -4,13 +4,29 @@ permissions: { contents: read }
 jobs:
   verify:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with: { version: 11.9.0 }
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with: { node-version: 24.14.0, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level high
+      - name: Secret-pattern scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git grep -nEI \
+            -e '-----BEGIN (ENCRYPTED |RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----' \
+            -e '(^|[^[:alnum:]_])(gh[pousr]_[[:alnum:]_]{20,}|github_pat_[[:alnum:]_]{20,})' \
+            -e '(^|[^[:alnum:]])(AKIA|ASIA)[0-9A-Z]{16}([^[:alnum:]]|$)' \
+            -- . ':(exclude)scripts/generate-dev-keys.mjs'
+          then
+            echo "::error::Potential secret material found in tracked files."
+            exit 1
+          fi
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm test
@@ -23,12 +39,10 @@ jobs:
           node scripts/generate-dev-keys.mjs
           PLAYSTOREHB_SIGNING_KEY_PATH=content/development/keys/DEVELOPMENT-ONLY-private.pem pnpm publisher sign-catalog --catalog content/development/catalog.json
           PLAYSTOREHB_PUBLIC_KEY_PATH=content/development/keys/development-local-public.pem pnpm publisher verify-catalog --catalog content/development/catalog.json
-      - name: Secret-pattern scan
-        run: '! git grep -nE "BEGIN (OPENSSH|RSA|PRIVATE) PRIVATE KEY|AKIA[0-9A-Z]{16}" -- ":(exclude)tests/**" ":(exclude)scripts/generate-dev-keys.mjs"'
   ps4-self-hosted:
     if: ${{ false }}
     runs-on: [self-hosted, openorbis]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - run: ./scripts/build-ps4
       - run: echo 'Artifact is PS4 build produced but not hardware tested.'
