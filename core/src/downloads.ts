@@ -11,7 +11,8 @@ import { verifyPackage } from "./integrity.js";
 export type DownloadErrorCode =
   | "UNAPPROVED_HOST" | "UNSAFE_FILENAME" | "INSUFFICIENT_STORAGE" | "NETWORK_TIMEOUT"
   | "REDIRECT_LIMIT" | "HTTP_ERROR" | "RANGE_REJECTED" | "CONTENT_LENGTH_MISMATCH"
-  | "HASH_MISMATCH" | "EXPIRED_URL" | "CANCELLED" | "CONNECTION_INTERRUPTED" | "FILESYSTEM_ERROR";
+  | "HASH_MISMATCH" | "EXPIRED_URL" | "CANCELLED" | "CONNECTION_INTERRUPTED" | "FILESYSTEM_ERROR"
+  | "INVALID_DESCRIPTOR" | "DUPLICATE_DOWNLOAD";
 
 export class DownloadError extends Error {
   constructor(public readonly code: DownloadErrorCode, message: string) { super(message); this.name = "DownloadError"; }
@@ -38,6 +39,7 @@ const filenamePattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,126}\.pkg$/;
 export class DownloadManager {
   private queue: DownloadRecord[] = [];
   private readonly aborters = new Map<string, AbortController>();
+  private readonly executions = new Map<string, Promise<void>>();
   private readonly fetchImpl: typeof fetch;
   constructor(private readonly options: DownloadManagerOptions) { this.fetchImpl = options.fetchImpl ?? fetch; }
 
@@ -49,28 +51,49 @@ export class DownloadManager {
   list(): DownloadRecord[] { return structuredClone(this.queue); }
   async enqueue(gameId: string, descriptor: PackageDescriptor): Promise<DownloadRecord> {
     if (!filenamePattern.test(descriptor.filename) || basename(descriptor.filename) !== descriptor.filename || descriptor.filename.includes("..")) throw new DownloadError("UNSAFE_FILENAME", "The catalog filename is unsafe.");
+    if (!Number.isSafeInteger(descriptor.size_bytes) || descriptor.size_bytes <= 0 || !/^[a-f0-9]{64}$/.test(descriptor.sha256)) throw new DownloadError("INVALID_DESCRIPTOR", "The package size or SHA-256 is invalid.");
     this.assertApprovedUrl(descriptor.url);
     if (descriptor.expires_at && Date.parse(descriptor.expires_at) <= Date.now()) throw new DownloadError("EXPIRED_URL", "The package URL has expired.");
     const id = `${gameId}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     const now = new Date().toISOString();
-    const record: DownloadRecord = { id, gameId, sourceUrl: descriptor.url, destination: join(this.options.downloadDirectory, descriptor.filename), expectedSize: descriptor.size_bytes, expectedSha256: descriptor.sha256, ...(descriptor.etag ? { expectedEtag: descriptor.etag } : {}), status: "queued", bytesCompleted: 0, attempts: 0, createdAt: now, updatedAt: now };
+    const destination = join(this.options.downloadDirectory, `${descriptor.sha256.slice(0, 16)}-${descriptor.filename}`);
+    if (this.queue.some((item) => item.destination === destination && !["failed", "cancelled"].includes(item.status))) throw new DownloadError("DUPLICATE_DOWNLOAD", "This exact package is already queued or downloaded.");
+    const record: DownloadRecord = { id, gameId, sourceUrl: descriptor.url, destination, expectedSize: descriptor.size_bytes, expectedSha256: descriptor.sha256, ...(descriptor.etag ? { expectedEtag: descriptor.etag } : {}), status: "queued", bytesCompleted: 0, attempts: 0, createdAt: now, updatedAt: now };
     this.queue.push(record); await this.persist(); return structuredClone(record);
   }
   async runPending(): Promise<void> {
-    const count = Math.max(1, Math.min(3, this.options.concurrency ?? 1));
+    const count = Math.max(1, Math.min(4, this.options.concurrency ?? 1));
     const workers = Array.from({ length: count }, async () => {
-      while (true) { const next = this.queue.find((item) => item.status === "queued"); if (!next) return; await this.execute(next); }
+      while (true) {
+        const next = this.queue.find((item) => item.status === "queued");
+        if (!next) return;
+        const execution = this.execute(next);
+        this.executions.set(next.id, execution);
+        try { await execution; } finally { this.executions.delete(next.id); }
+      }
     });
     await Promise.all(workers);
   }
   async pause(id: string): Promise<void> { const record = this.required(id); this.aborters.get(id)?.abort("pause"); record.status = "paused"; await this.touch(record); }
   async resume(id: string): Promise<void> { const record = this.required(id); if (!["paused", "failed"].includes(record.status)) return; record.status = "queued"; delete record.errorCode; await this.touch(record); }
-  async cancel(id: string): Promise<void> { const record = this.required(id); this.aborters.get(id)?.abort("cancel"); record.status = "cancelled"; await rm(`${record.destination}.part`, { force: true }); await this.touch(record); }
+  async cancel(id: string): Promise<void> {
+    const record = this.required(id);
+    this.aborters.get(id)?.abort("cancel");
+    record.status = "cancelled";
+    await this.touch(record);
+    await this.executions.get(id)?.catch(() => undefined);
+    await rm(`${record.destination}.part`, { force: true });
+  }
   async retry(id: string): Promise<void> { const record = this.required(id); if (record.attempts >= (this.options.retryLimit ?? 4)) throw new Error("Retry limit reached"); await this.resume(id); }
   async reorder(id: string, position: number): Promise<void> { const index = this.queue.findIndex((item) => item.id === id); if (index < 0) throw new Error("Unknown download"); const [record] = this.queue.splice(index, 1); this.queue.splice(Math.max(0, Math.min(position, this.queue.length)), 0, record!); await this.persist(); }
 
   private required(id: string): DownloadRecord { const record = this.queue.find((item) => item.id === id); if (!record) throw new Error(`Unknown download: ${id}`); return record; }
-  private assertApprovedUrl(raw: string): URL { const url = new URL(raw); if (url.protocol !== "https:" || !this.options.approvedHosts.includes(url.hostname.toLowerCase()) || url.username || url.password) throw new DownloadError("UNAPPROVED_HOST", "Package host is not approved."); return url; }
+  private assertApprovedUrl(raw: string): URL {
+    const url = new URL(raw);
+    const approved = this.options.approvedHosts.some((host) => host.toLowerCase() === url.hostname.toLowerCase());
+    if (url.protocol !== "https:" || !approved || url.username || url.password || url.port && url.port !== "443") throw new DownloadError("UNAPPROVED_HOST", "Package host is not approved.");
+    return url;
+  }
   private async execute(record: DownloadRecord): Promise<void> {
     record.status = "preflighting"; record.attempts += 1; await this.touch(record);
     const partPath = `${record.destination}.part`;
@@ -82,21 +105,46 @@ export class DownloadManager {
     if ((await this.options.storage.availableBytes(this.options.downloadDirectory)) < required || !(await this.options.storage.reserve(required))) return this.fail(record, "INSUFFICIENT_STORAGE");
     await mkdir(dirname(record.destination), { recursive: true });
     const aborter = new AbortController(); this.aborters.set(record.id, aborter);
-    const timer = setTimeout(() => aborter.abort("timeout"), this.options.timeoutMs ?? 30_000);
+    let inactivityTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearInactivityTimer = () => {
+      if (inactivityTimer) clearTimeout(inactivityTimer);
+      inactivityTimer = undefined;
+    };
+    const armInactivityTimer = () => {
+      clearInactivityTimer();
+      inactivityTimer = setTimeout(() => aborter.abort("timeout"), this.options.timeoutMs ?? 30_000);
+    };
+    armInactivityTimer();
     try {
       const headers = new Headers();
       if (partial > 0) { headers.set("Range", `bytes=${partial}-`); if (record.expectedEtag) headers.set("If-Range", record.expectedEtag); }
-      let response = await this.requestWithRedirects(record.sourceUrl, headers, aborter.signal);
-      if (partial > 0 && response.status === 200) { await truncate(partPath, 0); partial = 0; response = await this.requestWithRedirects(record.sourceUrl, new Headers(), aborter.signal); }
+      let response = await this.requestWithRedirects(record.sourceUrl, headers, aborter.signal, armInactivityTimer);
+      if (partial > 0 && response.status === 200) { await truncate(partPath, 0); partial = 0; response = await this.requestWithRedirects(record.sourceUrl, new Headers(), aborter.signal, armInactivityTimer); }
       if (partial > 0 && response.status !== 206) throw new DownloadError("RANGE_REJECTED", `Resume expected HTTP 206, received ${response.status}.`);
       if (partial === 0 && response.status !== 200) throw new DownloadError("HTTP_ERROR", `Download returned HTTP ${response.status}.`);
-      const contentLength = Number(response.headers.get("content-length"));
-      if (Number.isFinite(contentLength) && contentLength !== record.expectedSize - partial) throw new DownloadError("CONTENT_LENGTH_MISMATCH", "The server's content length did not match the catalog.");
+      const contentLengthHeader = response.headers.get("content-length");
+      const contentLength = contentLengthHeader === null ? Number.NaN : Number(contentLengthHeader);
+      if (!Number.isSafeInteger(contentLength) || contentLength !== record.expectedSize - partial) throw new DownloadError("CONTENT_LENGTH_MISMATCH", "The server's content length did not match the catalog.");
+      if (partial > 0) {
+        const expectedRange = `bytes ${partial}-${record.expectedSize - 1}/${record.expectedSize}`;
+        if (response.headers.get("content-range") !== expectedRange) throw new DownloadError("RANGE_REJECTED", "The server's Content-Range did not match the requested package bytes.");
+      }
       if (!response.body) throw new DownloadError("HTTP_ERROR", "Download returned no response body.");
       record.status = "downloading"; record.bytesCompleted = partial; await this.touch(record);
       const startedAt=Date.now();let nextAllowed=startedAt;const bytesPerMs=(this.options.bandwidthLimitKbps??0)*1024/1000;
-      const meter = new Transform({ transform: (chunk: Buffer, _encoding, callback) => { record.bytesCompleted += chunk.length; const elapsed=Math.max(1,Date.now()-startedAt);record.speedBytesPerSecond=Math.max(1,Math.round((record.bytesCompleted-partial)*1000/elapsed));record.estimatedSeconds=Math.ceil((record.expectedSize-record.bytesCompleted)/record.speedBytesPerSecond);record.updatedAt = new Date().toISOString(); this.options.onChange?.(structuredClone(record));if(bytesPerMs>0){nextAllowed=Math.max(Date.now(),nextAllowed)+Math.ceil(chunk.length/bytesPerMs);setTimeout(()=>callback(null,chunk),Math.max(0,nextAllowed-Date.now()));}else callback(null, chunk); } });
+      const meter = new Transform({ transform: (chunk: Buffer, _encoding, callback) => {
+        clearInactivityTimer();
+        record.bytesCompleted += chunk.length;
+        const elapsed=Math.max(1,Date.now()-startedAt);
+        record.speedBytesPerSecond=Math.max(1,Math.round((record.bytesCompleted-partial)*1000/elapsed));
+        record.estimatedSeconds=Math.ceil((record.expectedSize-record.bytesCompleted)/record.speedBytesPerSecond);
+        record.updatedAt = new Date().toISOString();
+        this.options.onChange?.(structuredClone(record));
+        const deliver = () => { armInactivityTimer(); callback(null, chunk); };
+        if(bytesPerMs>0){nextAllowed=Math.max(Date.now(),nextAllowed)+Math.ceil(chunk.length/bytesPerMs);setTimeout(deliver,Math.max(0,nextAllowed-Date.now()));}else deliver();
+      } });
       await pipeline(Readable.fromWeb(response.body as never), meter, createWriteStream(partPath, { flags: partial > 0 ? "a" : "w", mode: 0o600 }));
+      clearInactivityTimer();
       if (record.bytesCompleted !== record.expectedSize) throw new DownloadError("CONTENT_LENGTH_MISMATCH", "Downloaded byte count did not match the catalog.");
       record.status = "verifying"; await this.touch(record);
       const integrity = await verifyPackage(partPath, record.expectedSize, record.expectedSha256);
@@ -110,17 +158,22 @@ export class DownloadManager {
       else if (error instanceof DownloadError) await this.fail(record, error.code);
       else if (error instanceof TypeError || (error instanceof Error && /fetch|socket|terminated|network/i.test(error.message))) await this.fail(record,"CONNECTION_INTERRUPTED");
       else await this.fail(record, "FILESYSTEM_ERROR");
-    } finally { clearTimeout(timer); this.aborters.delete(record.id); }
+    } finally { clearInactivityTimer(); this.aborters.delete(record.id); }
     if (["NETWORK_TIMEOUT","HTTP_ERROR","CONNECTION_INTERRUPTED"].includes(record.errorCode??"") && record.attempts < (this.options.retryLimit ?? 4)) {
       const delay=(this.options.backoffBaseMs??250)*2**(record.attempts-1);await new Promise((resolve)=>setTimeout(resolve,delay));record.status="queued";await this.touch(record);
     }
   }
-  private async requestWithRedirects(raw: string, headers: Headers, signal: AbortSignal): Promise<Response> {
+  private async requestWithRedirects(raw: string, headers: Headers, signal: AbortSignal, onActivity: () => void): Promise<Response> {
     let url = this.assertApprovedUrl(raw);
+    const visited = new Set<string>();
     for (let count = 0; count <= (this.options.redirectLimit ?? 5); count += 1) {
+      if (visited.has(url.href)) throw new DownloadError("REDIRECT_LIMIT", "A redirect loop was detected.");
+      visited.add(url.href);
       const response = await this.fetchImpl(url, { headers, signal, redirect: "manual" });
+      onActivity();
       if (![301, 302, 303, 307, 308].includes(response.status)) return response;
       const location = response.headers.get("location"); if (!location) throw new DownloadError("HTTP_ERROR", "Redirect omitted Location header.");
+      await response.body?.cancel();
       url = this.assertApprovedUrl(new URL(location, url).toString());
     }
     throw new DownloadError("REDIRECT_LIMIT", "Too many redirects.");
