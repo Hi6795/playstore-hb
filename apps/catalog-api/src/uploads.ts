@@ -366,19 +366,27 @@ export class MultipartUploadService {
       .sort((left, right) => left.partNumber - right.partNumber);
     const fingerprint = completionFingerprint(sorted);
     if (["validation_pending", "validating", "validated", "validation_failed"].includes(session.status)) {
-      if (session.completionFingerprint === fingerprint) return session;
+      if (session.completionFingerprint === fingerprint) {
+        if (session.status === "validation_pending") await this.repository.enqueueValidation(id);
+        return session;
+      }
       throw new UploadError("INVALID_UPLOAD_STATE", "This upload was already completed with a different part list.", 409);
     }
-    this.assertNotExpired(session);
-    if (!["initiated", "uploading"].includes(session.status)) throw new UploadError("INVALID_UPLOAD_STATE", "This upload cannot be completed.", 409);
+    if (session.status !== "uploaded") this.assertNotExpired(session);
+    if (!["initiated", "uploading", "uploaded"].includes(session.status)) throw new UploadError("INVALID_UPLOAD_STATE", "This upload cannot be completed.", 409);
     const expectedPartCount = Math.ceil(session.expectedSizeBytes / session.partSizeBytes);
     if (sorted.length !== expectedPartCount || sorted.some((part, index) => part.partNumber !== index + 1)) throw new UploadError("PART_MISMATCH", "The multipart completion list is not contiguous and complete.", 409);
 
-    const stored = await this.storage.listParts({
-      bucket: session.bucket,
-      objectKey: session.objectKey,
-      providerUploadId: session.providerUploadId,
-    });
+    if (session.status === "uploaded" && session.completionFingerprint !== fingerprint) {
+      throw new UploadError("INVALID_UPLOAD_STATE", "This upload was already completed with a different part list.", 409);
+    }
+    const stored = session.status === "uploaded"
+      ? await this.repository.listParts(session.id)
+      : await this.storage.listParts({
+          bucket: session.bucket,
+          objectKey: session.objectKey,
+          providerUploadId: session.providerUploadId,
+        });
     const storedByNumber = new Map(stored.map((part) => [part.partNumber, part]));
     for (const requested of sorted) {
       const actual = storedByNumber.get(requested.partNumber);
@@ -388,18 +396,54 @@ export class MultipartUploadService {
       if (!actual || normalizeEtag(actual.etag) !== requested.etag || actual.sizeBytes !== expectedSize) throw new UploadError("PART_MISMATCH", `Part ${requested.partNumber} did not match storage.`, 409);
     }
 
-    await this.storage.complete({
-      bucket: session.bucket,
-      objectKey: session.objectKey,
-      providerUploadId: session.providerUploadId,
-      parts: sorted,
+    if (session.status !== "uploaded") await this.repository.saveParts(session.id, stored);
+    await this.repository.update(session.id, (current) => {
+      if (["validation_pending", "validating", "validated", "validation_failed"].includes(current.status)) {
+        if (current.completionFingerprint !== fingerprint) throw new UploadError("INVALID_UPLOAD_STATE", "This upload was already completed with a different part list.", 409);
+        return current;
+      }
+      if (current.status === "uploaded") {
+        if (current.completionFingerprint !== fingerprint) throw new UploadError("INVALID_UPLOAD_STATE", "This upload was already completed with a different part list.", 409);
+        return current;
+      }
+      if (!["initiated", "uploading"].includes(current.status)) throw new UploadError("INVALID_UPLOAD_STATE", "This upload cannot be completed.", 409);
+      return {
+        ...current,
+        status: "uploaded",
+        completionFingerprint: fingerprint,
+        updatedAt: this.now().toISOString(),
+      };
     });
-    const object = await this.storage.headObject({ bucket: session.bucket, objectKey: session.objectKey });
+
+    let object: { sizeBytes: number; etag?: string } | undefined;
+    try {
+      object = await this.storage.headObject({ bucket: session.bucket, objectKey: session.objectKey });
+    } catch {
+      try {
+        await this.storage.complete({
+          bucket: session.bucket,
+          objectKey: session.objectKey,
+          providerUploadId: session.providerUploadId,
+          parts: sorted,
+        });
+      } catch (completionError) {
+        try {
+          object = await this.storage.headObject({ bucket: session.bucket, objectKey: session.objectKey });
+        } catch {
+          throw completionError;
+        }
+      }
+      object ??= await this.storage.headObject({ bucket: session.bucket, objectKey: session.objectKey });
+    }
     if (object.sizeBytes !== session.expectedSizeBytes) {
       await this.storage.deleteObject({ bucket: session.bucket, objectKey: session.objectKey }).catch(() => undefined);
+      await this.repository.update(session.id, (current) => ({
+        ...current,
+        status: "validation_failed",
+        updatedAt: this.now().toISOString(),
+      }));
       throw new UploadError("OBJECT_SIZE_MISMATCH", "The completed object size did not match the upload declaration.", 409);
     }
-    await this.repository.saveParts(session.id, stored);
     const completed = await this.repository.update(session.id, (current) => ({
       ...current,
       status: "validation_pending",
@@ -416,13 +460,20 @@ export class MultipartUploadService {
     const session = await this.required(id);
     this.assertAccess(session, actor);
     if (["aborted", "expired", "deleted"].includes(session.status)) return session;
-    if (["validated", "validating"].includes(session.status)) throw new UploadError("INVALID_UPLOAD_STATE", "A validated object cannot be aborted.", 409);
+    if (["validation_pending", "validation_failed", "validated", "validating"].includes(session.status)) throw new UploadError("INVALID_UPLOAD_STATE", "A completed object cannot be aborted.", 409);
     await this.repository.update(id, (current) => ({ ...current, status: "aborting", updatedAt: this.now().toISOString() }));
-    await this.storage.abort({
-      bucket: session.bucket,
-      objectKey: session.objectKey,
-      providerUploadId: session.providerUploadId,
-    });
+    try {
+      await this.storage.abort({
+        bucket: session.bucket,
+        objectKey: session.objectKey,
+        providerUploadId: session.providerUploadId,
+      });
+    } catch (error) {
+      if (session.status !== "uploaded") throw error;
+    }
+    if (session.status === "uploaded") {
+      await this.storage.deleteObject({ bucket: session.bucket, objectKey: session.objectKey }).catch(() => undefined);
+    }
     return this.repository.update(id, (current) => ({ ...current, status: "aborted", updatedAt: this.now().toISOString() }));
   }
 
@@ -430,6 +481,7 @@ export class MultipartUploadService {
     const session = await this.required(id);
     this.assertAccess(session, actor);
     if (session.status !== "validation_failed") throw new UploadError("INVALID_UPLOAD_STATE", "Only a failed validation can be retried.", 409);
+    if (session.validationAttempts >= 20) throw new UploadError("INVALID_UPLOAD_STATE", "The validation retry limit has been reached.", 409);
     const updated = await this.repository.update(id, (current) => ({
       ...current,
       status: "validation_pending",
@@ -444,7 +496,7 @@ export class MultipartUploadService {
     const session = await this.required(id);
     this.assertAccess(session, actor);
     if (["validating", "validated"].includes(session.status)) throw new UploadError("INVALID_UPLOAD_STATE", "Validated submission files are removed through the submission workflow.", 409);
-    if (["initiated", "uploading"].includes(session.status)) await this.abort(id, actor);
+    if (["initiated", "uploading", "uploaded"].includes(session.status)) await this.abort(id, actor);
     await this.storage.deleteObject({ bucket: session.bucket, objectKey: session.objectKey }).catch(() => undefined);
     await this.repository.update(id, (current) => ({ ...current, status: "deleted", updatedAt: this.now().toISOString() }));
   }

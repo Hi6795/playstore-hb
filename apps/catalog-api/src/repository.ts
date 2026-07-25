@@ -18,7 +18,7 @@ export class MemoryRepository implements Repository {
 }
 
 export class PostgresRepository implements Repository {
-  constructor(private readonly pool: Pool) {}
+  constructor(readonly pool: Pool) {}
   static async connect(connectionString: string): Promise<PostgresRepository> { const pool = new Pool({ connectionString, max: 10, statement_timeout: 10_000, application_name: "playstorehb-api" }); await pool.query("SELECT 1"); return new PostgresRepository(pool); }
   async createSubmission(value: Submission, key?: string): Promise<Submission> {
     if (key) { const prior = await this.pool.query<{ response: Submission }>("SELECT response FROM idempotency_keys WHERE scope='submission' AND key=$1", [key]); if (prior.rows[0]) return prior.rows[0].response; }

@@ -14,6 +14,8 @@ import {
 import type { CatalogGame, CatalogManifest } from "../../../core/src/types.js";
 import type { AuditEvent, Principal, Repository, Role, Submission } from "./model.js";
 import { MemoryRepository } from "./repository.js";
+import { registerUploadRoutes } from "./upload-routes.js";
+import { MultipartUploadService, UploadError } from "./uploads.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -125,6 +127,7 @@ export interface ApiOptions {
   trustedKeys?: TrustedKey[];
   logger?: boolean;
   allowedOrigins?: string[];
+  uploadService?: MultipartUploadService;
 }
 
 export async function createApi(options: ApiOptions = {}): Promise<FastifyInstance> {
@@ -576,6 +579,8 @@ export async function createApi(options: ApiOptions = {}): Promise<FastifyInstan
     async () => repository.listAudit()
   );
 
+  if (options.uploadService) registerUploadRoutes(app, options.uploadService);
+
   return app;
 }
 
@@ -794,6 +799,13 @@ const signatureErrors = new Set([
 ]);
 
 function safeError(error: unknown): SafeErrorResponse {
+  if (error instanceof UploadError) {
+    return {
+      status: error.statusCode,
+      code: error.code,
+      message: error.message
+    };
+  }
   if (error instanceof z.ZodError || (error instanceof Error && error.name === "CatalogValidationError")) {
     return {
       status: 400,

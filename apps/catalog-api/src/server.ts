@@ -1,13 +1,167 @@
+import type { TrustedKey } from "../../../core/src/signedCatalog.js";
 import { createApi } from "./app.js";
-import { migrate, PostgresRepository, MemoryRepository } from "./repository.js";
+import { MemoryRepository, migrate, PostgresRepository } from "./repository.js";
+import { S3MultipartStorage } from "./s3-storage.js";
+import { MultipartUploadService, type UploadPolicy } from "./uploads.js";
+import { PostgresUploadRepository } from "./uploads-postgres.js";
 
-const host=process.env.HOST??"127.0.0.1";const port=Number(process.env.PORT??8080);
-const repository=process.env.DATABASE_URL?await PostgresRepository.connect(process.env.DATABASE_URL):new MemoryRepository();
-if(repository instanceof PostgresRepository) await migrate((repository as unknown as {pool:import("pg").Pool}).pool).catch((error)=>{throw new Error(`Database migration failed: ${String(error)}`);});
-let tokens:Record<string,{subject:string;role:"submitter"|"reviewer"|"publisher"|"administrator"}>={};
-try{tokens=JSON.parse(process.env.ADMIN_TOKENS_JSON??"{}");}catch{throw new Error("ADMIN_TOKENS_JSON must be valid JSON");}
-if(Object.keys(tokens).length===0&&process.env.NODE_ENV==="production")throw new Error("Production requires ADMIN_TOKENS_JSON");
-const allowedOrigins=(process.env.ADMIN_ORIGINS??"http://127.0.0.1:5174,http://localhost:5174").split(",").map((value)=>value.trim()).filter(Boolean);
-let trustedKeys:import("../../../core/src/signedCatalog.js").TrustedKey[]=[];try{trustedKeys=JSON.parse(process.env.CATALOG_TRUSTED_KEYS_JSON??"[]");}catch{throw new Error("CATALOG_TRUSTED_KEYS_JSON must be valid JSON");}
-const app=await createApi({repository,...(Object.keys(tokens).length?{tokens}:{}),logger:true,allowedOrigins,trustedKeys});
-await app.listen({host,port});
+const production = process.env.NODE_ENV === "production";
+const host = process.env.HOST ?? "127.0.0.1";
+const port = integerEnvironment("PORT", 8080, 1, 65_535);
+const databaseUrl = process.env.DATABASE_URL?.trim();
+
+if (production && !databaseUrl) {
+  throw new Error("Production requires DATABASE_URL; in-memory persistence is disabled");
+}
+
+const repository = databaseUrl
+  ? await PostgresRepository.connect(databaseUrl)
+  : new MemoryRepository();
+if (repository instanceof PostgresRepository) await migrate(repository.pool);
+
+const tokens = jsonEnvironment<Record<string, unknown>>("ADMIN_TOKENS_JSON", {});
+if (Object.keys(tokens).length === 0 && production) {
+  throw new Error("Production requires ADMIN_TOKENS_JSON until database sessions are enabled");
+}
+
+const allowedOrigins = (
+  process.env.ADMIN_ORIGINS ?? "http://127.0.0.1:5174,http://localhost:5174"
+)
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+if (production && allowedOrigins.some((origin) => !origin.startsWith("https://"))) {
+  throw new Error("Production ADMIN_ORIGINS must contain only HTTPS origins");
+}
+
+const trustedKeys = jsonEnvironment<TrustedKey[]>("CATALOG_TRUSTED_KEYS_JSON", []);
+const uploadService = createUploadService(repository);
+if (production && !uploadService) {
+  throw new Error("Production requires configured private S3-compatible quarantine storage");
+}
+
+const app = await createApi({
+  repository,
+  ...(Object.keys(tokens).length ? { tokens } : {}),
+  logger: true,
+  allowedOrigins,
+  trustedKeys,
+  ...(uploadService ? { uploadService } : {})
+});
+
+let cleanupTimer: NodeJS.Timeout | undefined;
+if (uploadService) {
+  cleanupTimer = setInterval(
+    () => {
+      void uploadService.cleanupExpired().catch((error: unknown) => {
+        app.log.error({ err: error }, "Expired multipart upload cleanup failed");
+      });
+    },
+    integerEnvironment("UPLOAD_CLEANUP_INTERVAL_SECONDS", 900, 60, 86_400) * 1000
+  );
+  cleanupTimer.unref();
+}
+
+app.addHook("onClose", async () => {
+  if (cleanupTimer) clearInterval(cleanupTimer);
+});
+
+await app.listen({ host, port });
+
+function createUploadService(
+  selectedRepository: MemoryRepository | PostgresRepository
+): MultipartUploadService | undefined {
+  if (!(selectedRepository instanceof PostgresRepository)) return undefined;
+  const configured =
+    production ||
+    Boolean(
+      process.env.S3_ENDPOINT ||
+        process.env.S3_ACCESS_KEY_ID ||
+        process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI ||
+        process.env.AWS_WEB_IDENTITY_TOKEN_FILE
+    );
+  if (!configured) return undefined;
+  const policy: Partial<UploadPolicy> = {
+    quarantineBucket:
+      process.env.UPLOAD_QUARANTINE_BUCKET?.trim() || "playstore-hb-quarantine",
+    packagePartSizeBytes: integerEnvironment(
+      "UPLOAD_PACKAGE_PART_SIZE_BYTES",
+      64 * 1024 * 1024,
+      5 * 1024 * 1024,
+      5 * 1024 * 1024 * 1024
+    ),
+    maximumParallelParts: integerEnvironment(
+      "UPLOAD_MAXIMUM_PARALLEL_PARTS",
+      4,
+      1,
+      4
+    ),
+    presignedUrlLifetimeSeconds: integerEnvironment(
+      "UPLOAD_PRESIGNED_URL_LIFETIME_SECONDS",
+      15 * 60,
+      60,
+      15 * 60
+    ),
+    abandonedUploadHours: integerEnvironment(
+      "UPLOAD_ABANDONED_HOURS",
+      24,
+      1,
+      168
+    ),
+    maximumPackageSizeBytes: integerEnvironment(
+      "UPLOAD_MAXIMUM_PACKAGE_SIZE_BYTES",
+      50 * 1024 ** 3,
+      1,
+      50 * 1024 ** 3
+    ),
+    maximumMediaSizeBytes: integerEnvironment(
+      "UPLOAD_MAXIMUM_MEDIA_SIZE_BYTES",
+      512 * 1024 ** 2,
+      1,
+      2 * 1024 ** 3
+    ),
+    maximumEvidenceSizeBytes: integerEnvironment(
+      "UPLOAD_MAXIMUM_EVIDENCE_SIZE_BYTES",
+      100 * 1024 ** 2,
+      1,
+      2 * 1024 ** 3
+    ),
+    maximumActivePackageUploads: integerEnvironment(
+      "UPLOAD_MAXIMUM_ACTIVE_PACKAGE_UPLOADS",
+      3,
+      1,
+      20
+    )
+  };
+  return new MultipartUploadService(
+    new PostgresUploadRepository(selectedRepository.pool),
+    S3MultipartStorage.fromEnvironment(),
+    policy
+  );
+}
+
+function jsonEnvironment<T>(name: string, fallback: T): T {
+  const value = process.env[name];
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    throw new Error(`${name} must be valid JSON`);
+  }
+}
+
+function integerEnvironment(
+  name: string,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  const value = process.env[name];
+  if (value === undefined || value.trim() === "") return fallback;
+  if (!/^[0-9]+$/.test(value)) throw new Error(`${name} must be an integer`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`${name} must be between ${minimum} and ${maximum}`);
+  }
+  return parsed;
+}
