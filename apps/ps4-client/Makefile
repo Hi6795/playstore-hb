@@ -7,7 +7,7 @@ CONTENT_ID  := IV0000-PSTB00001_00-PLAYSTOREHB00000
 TOOLCHAIN   := $(OO_PS4_TOOLCHAIN)
 ROOT        := ../..
 BUILD       := $(ROOT)/build/ps4-posix
-OBJECTS     := $(BUILD)/obj/main.o $(BUILD)/obj/ps4_shell.o $(BUILD)/obj/application.o $(BUILD)/obj/openorbis_platform.o
+OBJECTS     := $(BUILD)/obj/main.o $(BUILD)/obj/ps4_shell.o $(BUILD)/obj/application.o $(BUILD)/obj/ps4_download.o $(BUILD)/obj/openorbis_platform.o
 ELF         := $(BUILD)/artifacts/playstore-hb.elf
 OELF        := $(BUILD)/artifacts/playstore-hb.oelf
 PACKAGE     := $(BUILD)/package
@@ -25,7 +25,7 @@ PKGTOOL      := $(TOOLCHAIN)/bin/$(PLATFORM_BIN)/PkgTool.Core
 CPPFLAGS := -DPLAYSTOREHB_PS4=1 -Iinclude -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include -isystem $(TOOLCHAIN)/include/c++/v1
 CXXFLAGS := --target=x86_64-pc-freebsd12-elf -std=c++17 -fPIC -funwind-tables -ffunction-sections -fdata-sections -O2 -DNDEBUG -Wall -Wextra -Wpedantic -Werror
 LDFLAGS  := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr --gc-sections -L$(TOOLCHAIN)/lib
-LIBS     := -lc -lkernel -lc++ -lSceSystemService -lSceVideoOut -lScePad -lSceUserService -lSceAppInstUtil
+LIBS     := -lc -lkernel -lc++ -lSceSystemService -lSceVideoOut -lScePad -lSceUserService -lSceNet -lSceSsl -lSceHttp -lSceSysmodule -lSceAppInstUtil
 
 .PHONY: all verify-env clean
 all: verify-env $(PKG)
