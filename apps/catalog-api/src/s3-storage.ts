@@ -18,6 +18,7 @@ export interface S3MultipartStorageOptions {
   accessKeyId?: string;
   secretAccessKey?: string;
   forcePathStyle?: boolean;
+  allowInsecureHttp?: boolean;
   sessionToken?: string;
   serverSideEncryption?: "AES256" | "aws:kms";
   kmsKeyId?: string;
@@ -32,9 +33,12 @@ export class S3MultipartStorage implements MultipartStorage {
       if (
         endpoint.protocol !== "https:" &&
         endpoint.hostname !== "localhost" &&
-        endpoint.hostname !== "127.0.0.1"
+        endpoint.hostname !== "127.0.0.1" &&
+        !options.allowInsecureHttp
       ) {
-        throw new Error("S3_ENDPOINT must use HTTPS outside local development");
+        throw new Error(
+          "S3_ENDPOINT must use HTTPS unless insecure HTTP is explicitly enabled for development"
+        );
       }
     }
     if (options.serverSideEncryption === "aws:kms" && !options.kmsKeyId) {
@@ -76,6 +80,7 @@ export class S3MultipartStorage implements MultipartStorage {
       ...(accessKeyId ? { accessKeyId } : {}),
       ...(secretAccessKey ? { secretAccessKey } : {}),
       forcePathStyle: parseBoolean(environment.S3_FORCE_PATH_STYLE, false),
+      allowInsecureHttp: parseBoolean(environment.S3_ALLOW_INSECURE_HTTP, false),
       ...(environment.S3_SESSION_TOKEN ? { sessionToken: environment.S3_SESSION_TOKEN } : {}),
       ...(serverSideEncryption ? { serverSideEncryption } : {}),
       ...(environment.S3_KMS_KEY_ID ? { kmsKeyId: environment.S3_KMS_KEY_ID } : {})

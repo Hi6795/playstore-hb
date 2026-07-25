@@ -26,6 +26,7 @@ export type UploadStatus =
 export interface UploadActor {
   subject: string;
   role: UploadRole;
+  roles?: UploadRole[];
 }
 
 export interface UploadSession {
@@ -529,16 +530,20 @@ export class MultipartUploadService {
   private async assertSubmissionAccess(submissionId: string, actor: UploadActor): Promise<void> {
     const owner = await this.repository.getSubmissionOwner(submissionId);
     if (!owner) throw new UploadError("UPLOAD_NOT_FOUND", "Submission not found.", 404);
-    if (owner !== actor.subject && actor.role !== "administrator") throw new UploadError("UPLOAD_FORBIDDEN", "The submission belongs to another account.", 403);
+    if (owner !== actor.subject && !isAdministrator(actor)) throw new UploadError("UPLOAD_FORBIDDEN", "The submission belongs to another account.", 403);
   }
 
   private assertAccess(session: UploadSession, actor: UploadActor): void {
-    if (session.ownerSubject !== actor.subject && actor.role !== "administrator") throw new UploadError("UPLOAD_FORBIDDEN", "The upload belongs to another account.", 403);
+    if (session.ownerSubject !== actor.subject && !isAdministrator(actor)) throw new UploadError("UPLOAD_FORBIDDEN", "The upload belongs to another account.", 403);
   }
 
   private assertNotExpired(session: UploadSession): void {
     if (Date.parse(session.expiresAt) <= this.now().getTime()) throw new UploadError("UPLOAD_EXPIRED", "The upload session has expired.", 410);
   }
+}
+
+function isAdministrator(actor: UploadActor): boolean {
+  return actor.role === "administrator" || actor.roles?.includes("administrator") === true;
 }
 
 export class MemoryUploadRepository implements UploadRepository {

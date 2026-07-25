@@ -1,7 +1,13 @@
 import type { CatalogGame, CatalogManifest } from "../../../core/src/types.js";
 
 export type Role = "submitter" | "reviewer" | "hardware_tester" | "publisher" | "administrator";
-export interface Principal { subject: string; role: Role }
+export interface Principal {
+  subject: string;
+  role: Role;
+  roles?: Role[];
+  username?: string;
+  sessionId?: string;
+}
 export type SubmissionStatus =
   | "draft"
   | "submitted"

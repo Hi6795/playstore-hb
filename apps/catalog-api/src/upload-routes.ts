@@ -147,7 +147,8 @@ async function requireUploadActor(
     });
     return;
   }
-  if (!["submitter", "administrator"].includes(request.principal.role)) {
+  const roles = request.principal.roles ?? [request.principal.role];
+  if (!roles.some((role) => role === "submitter" || role === "administrator")) {
     return reply.code(403).send({
       error: {
         code: "FORBIDDEN",
@@ -159,7 +160,11 @@ async function requireUploadActor(
 }
 
 function actor(principal: Principal): UploadActor {
-  return { subject: principal.subject, role: principal.role };
+  return {
+    subject: principal.subject,
+    role: principal.role,
+    ...(principal.roles ? { roles: principal.roles } : {})
+  };
 }
 
 function publicUpload(session: UploadSession) {

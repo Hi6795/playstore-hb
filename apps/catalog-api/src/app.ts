@@ -12,6 +12,8 @@ import {
   type TrustedKey
 } from "../../../core/src/index.js";
 import type { CatalogGame, CatalogManifest } from "../../../core/src/types.js";
+import { registerAuthRoutes } from "./auth-routes.js";
+import { AuthError, AuthService } from "./auth.js";
 import type { AuditEvent, Principal, Repository, Role, Submission } from "./model.js";
 import { MemoryRepository } from "./repository.js";
 import { registerUploadRoutes } from "./upload-routes.js";
@@ -26,8 +28,9 @@ declare module "fastify" {
 const roles = ["submitter", "reviewer", "hardware_tester", "publisher", "administrator"] as const;
 const principalSchema = z.object({
   subject: z.string().trim().min(1).max(200),
-  role: z.enum(roles)
-}).strict();
+  role: z.enum(roles).optional(),
+  roles: z.array(z.enum(roles)).min(1).max(roles.length).optional()
+}).strict().refine((value) => value.role !== undefined || value.roles !== undefined);
 
 type Permission =
   | "submission:write"
@@ -128,13 +131,22 @@ export interface ApiOptions {
   logger?: boolean;
   allowedOrigins?: string[];
   uploadService?: MultipartUploadService;
+  authService?: AuthService;
+  authBootstrapToken?: string;
 }
 
 export async function createApi(options: ApiOptions = {}): Promise<FastifyInstance> {
   const repository = options.repository ?? new MemoryRepository();
-  const tokens: Readonly<Record<string, unknown>> = options.tokens ?? {
-    "development-admin-token": { subject: "local-admin", role: "administrator" }
-  };
+  const tokens: Readonly<Record<string, unknown>> =
+    options.tokens ??
+    (options.authService
+      ? {}
+      : {
+          "development-admin-token": {
+            subject: "local-admin",
+            role: "administrator"
+          }
+        });
   const allowedOrigins = options.allowedOrigins ?? [
     "http://127.0.0.1:5174",
     "http://localhost:5174"
@@ -156,7 +168,7 @@ export async function createApi(options: ApiOptions = {}): Promise<FastifyInstan
         .header("vary", "origin")
         .header(
           "access-control-allow-headers",
-          "authorization,content-type,idempotency-key,x-request-id"
+          "authorization,content-type,idempotency-key,x-request-id,x-bootstrap-token"
         )
         .header("access-control-allow-methods", "GET,POST,PUT,OPTIONS");
     }
@@ -181,14 +193,40 @@ export async function createApi(options: ApiOptions = {}): Promise<FastifyInstan
     const match = typeof header === "string" ? /^Bearer ([^\s]+)$/i.exec(header) : null;
     if (!match) return;
     const token = match[1]!;
-    if (!Object.prototype.hasOwnProperty.call(tokens, token)) return;
-    const parsed = principalSchema.safeParse(tokens[token]);
-    if (parsed.success) request.principal = parsed.data;
+    if (Object.prototype.hasOwnProperty.call(tokens, token)) {
+      const parsed = principalSchema.safeParse(tokens[token]);
+      if (parsed.success) {
+        const parsedRoles = [
+          ...new Set([...(parsed.data.roles ?? []), ...(parsed.data.role ? [parsed.data.role] : [])])
+        ];
+        request.principal = {
+          subject: parsed.data.subject,
+          role: preferredRole(parsedRoles),
+          roles: parsedRoles
+        };
+      }
+      return;
+    }
+    if (options.authService) {
+      const authenticated = await options.authService.authenticate(token);
+      if (authenticated && authenticated.roles.length > 0) {
+        request.principal = {
+          subject: authenticated.subject,
+          username: authenticated.username,
+          sessionId: authenticated.sessionId,
+          role: preferredRole(authenticated.roles),
+          roles: authenticated.roles
+        };
+      }
+    }
   });
 
   app.setErrorHandler((error, request, reply) => {
     const response = safeError(error);
     if (response.status === 500) request.log.error({ err: error }, "Unhandled API error");
+    if (error instanceof AuthError && error.retryAfterMs) {
+      reply.header("retry-after", String(Math.ceil(error.retryAfterMs / 1000)));
+    }
     return reply
       .code(response.status)
       .send(problem(request, response.code, response.message));
@@ -580,6 +618,13 @@ export async function createApi(options: ApiOptions = {}): Promise<FastifyInstan
   );
 
   if (options.uploadService) registerUploadRoutes(app, options.uploadService);
+  if (options.authService) {
+    registerAuthRoutes(app, options.authService, {
+      ...(options.authBootstrapToken
+        ? { bootstrapToken: options.authBootstrapToken }
+        : {})
+    });
+  }
 
   return app;
 }
@@ -591,12 +636,33 @@ function authorize(permission: Permission) {
         .code(401)
         .send(problem(request, "UNAUTHENTICATED", "A valid bearer token is required."));
     }
-    if (!permissionRoles[permission].includes(request.principal.role)) {
+    if (
+      !principalRoles(request.principal).some((role) =>
+        permissionRoles[permission].includes(role)
+      )
+    ) {
       return reply
         .code(403)
         .send(problem(request, "FORBIDDEN", "This role cannot perform that action."));
     }
   };
+}
+
+function principalRoles(principal: Principal): Role[] {
+  return [...new Set(principal.roles ?? [principal.role])];
+}
+
+function preferredRole(available: readonly Role[]): Role {
+  for (const role of [
+    "administrator",
+    "publisher",
+    "hardware_tester",
+    "reviewer",
+    "submitter"
+  ] as const) {
+    if (available.includes(role)) return role;
+  }
+  throw new Error("INVALID_PRINCIPAL_ROLES");
 }
 
 function assertOwnedDraft(submission: Submission, principal: Principal): void {
@@ -799,6 +865,13 @@ const signatureErrors = new Set([
 ]);
 
 function safeError(error: unknown): SafeErrorResponse {
+  if (error instanceof AuthError) {
+    return {
+      status: error.statusCode,
+      code: error.code,
+      message: error.message
+    };
+  }
   if (error instanceof UploadError) {
     return {
       status: error.statusCode,

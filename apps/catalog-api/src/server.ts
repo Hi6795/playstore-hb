@@ -1,5 +1,7 @@
 import type { TrustedKey } from "../../../core/src/signedCatalog.js";
 import { createApi } from "./app.js";
+import { PostgresAuthRepository } from "./auth-postgres.js";
+import { AuthService, MemoryAuthRepository } from "./auth.js";
 import { MemoryRepository, migrate, PostgresRepository } from "./repository.js";
 import { S3MultipartStorage } from "./s3-storage.js";
 import { MultipartUploadService, type UploadPolicy } from "./uploads.js";
@@ -13,6 +15,9 @@ const databaseUrl = process.env.DATABASE_URL?.trim();
 if (production && !databaseUrl) {
   throw new Error("Production requires DATABASE_URL; in-memory persistence is disabled");
 }
+if (production && process.env.S3_ALLOW_INSECURE_HTTP === "true") {
+  throw new Error("Production forbids S3_ALLOW_INSECURE_HTTP");
+}
 
 const repository = databaseUrl
   ? await PostgresRepository.connect(databaseUrl)
@@ -20,9 +25,38 @@ const repository = databaseUrl
 if (repository instanceof PostgresRepository) await migrate(repository.pool);
 
 const tokens = jsonEnvironment<Record<string, unknown>>("ADMIN_TOKENS_JSON", {});
-if (Object.keys(tokens).length === 0 && production) {
-  throw new Error("Production requires ADMIN_TOKENS_JSON until database sessions are enabled");
+if (Object.keys(tokens).length > 0 && production) {
+  throw new Error("Production forbids static ADMIN_TOKENS_JSON credentials");
 }
+const bootstrapToken = process.env.ADMIN_BOOTSTRAP_TOKEN;
+if (bootstrapToken && Buffer.byteLength(bootstrapToken, "utf8") < 32) {
+  throw new Error("ADMIN_BOOTSTRAP_TOKEN must contain at least 32 UTF-8 bytes");
+}
+const authService = new AuthService(
+  repository instanceof PostgresRepository
+    ? new PostgresAuthRepository(repository.pool)
+    : new MemoryAuthRepository(),
+  {
+    sessionTtlMs: integerEnvironment(
+      "AUTH_SESSION_TTL_SECONDS",
+      8 * 60 * 60,
+      5 * 60,
+      7 * 24 * 60 * 60
+    ) * 1000,
+    maximumFailedAttempts: integerEnvironment(
+      "AUTH_MAXIMUM_FAILED_ATTEMPTS",
+      5,
+      3,
+      20
+    ),
+    failedAttemptWindowMs: integerEnvironment(
+      "AUTH_FAILED_ATTEMPT_WINDOW_SECONDS",
+      15 * 60,
+      60,
+      24 * 60 * 60
+    ) * 1000
+  }
+);
 
 const allowedOrigins = (
   process.env.ADMIN_ORIGINS ?? "http://127.0.0.1:5174,http://localhost:5174"
@@ -46,6 +80,8 @@ const app = await createApi({
   logger: true,
   allowedOrigins,
   trustedKeys,
+  authService,
+  ...(bootstrapToken ? { authBootstrapToken: bootstrapToken } : {}),
   ...(uploadService ? { uploadService } : {})
 });
 
