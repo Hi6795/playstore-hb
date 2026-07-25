@@ -1,0 +1,13 @@
+.git/
+node_modules/
+**/node_modules/
+build/
+dist/
+work/
+outputs/
+.env*
+**/.env*
+content/development/keys/
+coverage/
+test-results/
+playwright-report/

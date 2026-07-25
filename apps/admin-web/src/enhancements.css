@@ -1,3 +1,28 @@
-select{background:#080d16;color:white;border:1px solid #334057;border-radius:7px;padding:11px;font:inherit}
-select:focus{outline:2px solid #5be1e4}
-.uploads{margin:20px 0;padding:16px;background:#0b111c;border-radius:9px}
+:focus-visible {
+  outline: 2px solid #24d6e5;
+  outline-offset: 3px;
+}
+
+::selection {
+  background: rgba(39, 117, 255, 0.5);
+  color: #fff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --line: rgba(247, 249, 252, 0.46);
+    --text-secondary: #d5ddeb;
+    --muted: #b4bfd2;
+  }
+}

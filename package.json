@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.9.0",
-  "engines": { "node": ">=24.0.0" },
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
     "build": "pnpm build:server && pnpm build:desktop && pnpm build:admin",
     "build:server": "tsc -p tsconfig.node.json",
@@ -24,6 +26,8 @@
     "license-notices": "node scripts/generate-license-notices.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1094.0",
+    "@aws-sdk/s3-request-presigner": "3.1094.0",
     "fastify": "5.10.0",
     "pg": "8.22.0",
     "sharp": "0.35.3",

@@ -1,1 +1,19 @@
-message(FATAL_ERROR "The PS4 target uses the OpenOrbis v0.5.4 Clang/LLD pipeline, not CMake. Run scripts/build-ps4.ps1 or scripts/build-ps4.")
+set(PLAYSTOREHB_OPENORBIS_SOURCES
+  src/main.cpp
+  src/ps4_shell.cpp
+  src/application.cpp
+  src/ps4_download.cpp
+  src/openorbis_platform.cpp
+)
+set(PLAYSTOREHB_OPENORBIS_STUBS
+  SceSystemService
+  SceVideoOut
+  ScePad
+  SceUserService
+  SceNet
+  SceSsl
+  SceHttp
+  SceSysmodule
+  SceAppInstUtil
+)
+message(FATAL_ERROR "The PS4 target uses the OpenOrbis v0.5.4 Clang/LLD pipeline, not CMake. The source/stub inventory above is informational; run scripts/build-ps4.ps1 or scripts/build-ps4.")
