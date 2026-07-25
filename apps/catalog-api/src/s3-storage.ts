@@ -3,6 +3,7 @@ import {
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
+  HeadBucketCommand,
   HeadObjectCommand,
   ListPartsCommand,
   S3Client,
@@ -223,6 +224,19 @@ export class S3MultipartStorage implements MultipartStorage {
     await this.client.send(
       new DeleteObjectCommand({ Bucket: input.bucket, Key: input.objectKey })
     );
+  }
+
+  async checkBucket(bucket: string, timeoutMs = 3_000): Promise<void> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    timer.unref();
+    try {
+      await this.client.send(new HeadBucketCommand({ Bucket: bucket }), {
+        abortSignal: controller.signal
+      });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 

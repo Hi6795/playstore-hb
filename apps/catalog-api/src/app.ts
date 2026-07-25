@@ -15,6 +15,7 @@ import type { CatalogGame, CatalogManifest } from "../../../core/src/types.js";
 import { registerAuthRoutes } from "./auth-routes.js";
 import { AuthError, AuthService } from "./auth.js";
 import type { AuditEvent, Principal, Repository, Role, Submission } from "./model.js";
+import type { ReadinessService } from "./readiness.js";
 import { MemoryRepository } from "./repository.js";
 import { registerUploadRoutes } from "./upload-routes.js";
 import { MultipartUploadService, UploadError } from "./uploads.js";
@@ -133,6 +134,8 @@ export interface ApiOptions {
   uploadService?: MultipartUploadService;
   authService?: AuthService;
   authBootstrapToken?: string;
+  readiness?: ReadinessService;
+  trustedProxies?: string[];
 }
 
 export async function createApi(options: ApiOptions = {}): Promise<FastifyInstance> {
@@ -156,7 +159,10 @@ export async function createApi(options: ApiOptions = {}): Promise<FastifyInstan
     bodyLimit: 25 * 1024 * 1024,
     requestIdHeader: "x-request-id",
     genReqId: () => randomUUID(),
-    trustProxy: false
+    trustProxy:
+      options.trustedProxies && options.trustedProxies.length > 0
+        ? options.trustedProxies
+        : false
   });
   const rate = new Map<string, { window: number; count: number }>();
 
@@ -237,6 +243,18 @@ export async function createApi(options: ApiOptions = {}): Promise<FastifyInstan
     service: "playstorehb-catalog-api",
     version: "0.1.0"
   }));
+  app.get("/ready", async (request, reply) => {
+    if (!options.readiness) {
+      return reply
+        .code(503)
+        .send(problem(request, "READINESS_NOT_CONFIGURED", "Readiness is not configured."));
+    }
+    const result = await options.readiness.check();
+    return reply.code(result.ready ? 200 : 503).send({
+      status: result.ready ? "ready" : "not_ready",
+      checks: result.checks
+    });
+  });
   app.get("/v1/catalog", async (_request, reply) =>
     reply
       .header("cache-control", "public, max-age=60")

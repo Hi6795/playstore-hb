@@ -1,7 +1,9 @@
 import type { TrustedKey } from "../../../core/src/signedCatalog.js";
+import { isIP } from "node:net";
 import { createApi } from "./app.js";
 import { PostgresAuthRepository } from "./auth-postgres.js";
 import { AuthService, MemoryAuthRepository } from "./auth.js";
+import { ReadinessService } from "./readiness.js";
 import { MemoryRepository, migrate, PostgresRepository } from "./repository.js";
 import { S3MultipartStorage } from "./s3-storage.js";
 import { MultipartUploadService, type UploadPolicy } from "./uploads.js";
@@ -69,10 +71,22 @@ if (production && allowedOrigins.some((origin) => !origin.startsWith("https://")
 }
 
 const trustedKeys = jsonEnvironment<TrustedKey[]>("CATALOG_TRUSTED_KEYS_JSON", []);
-const uploadService = createUploadService(repository);
-if (production && !uploadService) {
+const trustedProxies = trustedProxyEnvironment("TRUSTED_PROXY_CIDRS");
+const uploadRuntime = createUploadRuntime(repository);
+if (production && !uploadRuntime) {
   throw new Error("Production requires configured private S3-compatible quarantine storage");
 }
+const readiness =
+  repository instanceof PostgresRepository && uploadRuntime
+    ? new ReadinessService({
+        database: async () => {
+          await repository.pool.query("SELECT 1");
+        },
+        quarantineStorage: async () => {
+          await uploadRuntime.storage.checkBucket(uploadRuntime.quarantineBucket);
+        }
+      })
+    : undefined;
 
 const app = await createApi({
   repository,
@@ -81,15 +95,17 @@ const app = await createApi({
   allowedOrigins,
   trustedKeys,
   authService,
+  ...(trustedProxies.length > 0 ? { trustedProxies } : {}),
   ...(bootstrapToken ? { authBootstrapToken: bootstrapToken } : {}),
-  ...(uploadService ? { uploadService } : {})
+  ...(uploadRuntime ? { uploadService: uploadRuntime.service } : {}),
+  ...(readiness ? { readiness } : {})
 });
 
 let cleanupTimer: NodeJS.Timeout | undefined;
-if (uploadService) {
+if (uploadRuntime) {
   cleanupTimer = setInterval(
     () => {
-      void uploadService.cleanupExpired().catch((error: unknown) => {
+      void uploadRuntime.service.cleanupExpired().catch((error: unknown) => {
         app.log.error({ err: error }, "Expired multipart upload cleanup failed");
       });
     },
@@ -100,13 +116,20 @@ if (uploadService) {
 
 app.addHook("onClose", async () => {
   if (cleanupTimer) clearInterval(cleanupTimer);
+  if (repository instanceof PostgresRepository) await repository.pool.end();
 });
 
 await app.listen({ host, port });
 
-function createUploadService(
+interface UploadRuntime {
+  service: MultipartUploadService;
+  storage: S3MultipartStorage;
+  quarantineBucket: string;
+}
+
+function createUploadRuntime(
   selectedRepository: MemoryRepository | PostgresRepository
-): MultipartUploadService | undefined {
+): UploadRuntime | undefined {
   if (!(selectedRepository instanceof PostgresRepository)) return undefined;
   const configured =
     production ||
@@ -169,11 +192,16 @@ function createUploadService(
       20
     )
   };
-  return new MultipartUploadService(
-    new PostgresUploadRepository(selectedRepository.pool),
-    S3MultipartStorage.fromEnvironment(),
-    policy
-  );
+  const storage = S3MultipartStorage.fromEnvironment();
+  return {
+    service: new MultipartUploadService(
+      new PostgresUploadRepository(selectedRepository.pool),
+      storage,
+      policy
+    ),
+    storage,
+    quarantineBucket: policy.quarantineBucket!
+  };
 }
 
 function jsonEnvironment<T>(name: string, fallback: T): T {
@@ -200,4 +228,28 @@ function integerEnvironment(
     throw new Error(`${name} must be between ${minimum} and ${maximum}`);
   }
   return parsed;
+}
+
+function trustedProxyEnvironment(name: string): string[] {
+  const value = process.env[name]?.trim();
+  if (!value) return [];
+  return value.split(",").map((entry) => {
+    const candidate = entry.trim();
+    const [address, prefixText, ...extra] = candidate.split("/");
+    const family = isIP(address ?? "");
+    if (family === 0 || extra.length > 0) {
+      throw new Error(`${name} contains an invalid IP address or CIDR`);
+    }
+    if (prefixText !== undefined) {
+      if (!/^[0-9]+$/.test(prefixText)) {
+        throw new Error(`${name} contains an invalid CIDR prefix`);
+      }
+      const prefix = Number(prefixText);
+      const maximum = family === 4 ? 32 : 128;
+      if (prefix < 0 || prefix > maximum) {
+        throw new Error(`${name} contains an invalid CIDR prefix`);
+      }
+    }
+    return candidate;
+  });
 }
