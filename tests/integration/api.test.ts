@@ -19,6 +19,7 @@ const tokens = {
   admin: { subject: "root", role: "administrator" as const }
 };
 const body = {
+  gameId: "development-test-data",
   name: "DEVELOPMENT TEST DATA",
   developer: "Test suite",
   contact: "test@example.invalid",
@@ -89,11 +90,12 @@ async function createSubmitted(
   instance: FastifyInstance,
   selectedGame: CatalogGame = game
 ): Promise<string> {
+  const submissionBody = { ...body, gameId: selectedGame.id };
   const create = await instance.inject({
     method: "POST",
     url: "/v1/admin/games",
     headers: { authorization: "Bearer submit" },
-    payload: body
+    payload: submissionBody
   });
   expect(create.statusCode).toBe(201);
   const id = create.json().id as string;
@@ -103,7 +105,7 @@ async function createSubmitted(
         method: "PUT",
         url: `/v1/admin/games/${id}`,
         headers: { authorization: "Bearer submit" },
-        payload: { submission: body, game: selectedGame }
+        payload: { submission: submissionBody, game: selectedGame }
       })
     ).statusCode
   ).toBe(200);

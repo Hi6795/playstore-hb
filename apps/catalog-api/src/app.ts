@@ -52,6 +52,7 @@ const permissionRoles: Record<Permission, readonly Role[]> = {
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const createSchema = z.object({
+  gameId: z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/),
   name: z.string().min(1).max(120),
   developer: z.string().min(1).max(120),
   publisher: z.string().max(120).optional(),
@@ -333,6 +334,9 @@ export async function createApi(options: ApiOptions = {}): Promise<FastifyInstan
       const game =
         wrapped && raw.game !== undefined ? validateGameRecord(raw.game) : undefined;
       if (!data && !game) throw new Error("EMPTY_UPDATE");
+      if (data && game && data.gameId !== game.id) {
+        throw new Error("GAME_ID_MISMATCH");
+      }
 
       const existing = await repository.listSubmissions();
       if (
@@ -351,6 +355,9 @@ export async function createApi(options: ApiOptions = {}): Promise<FastifyInstan
         assertOwnedDraft(submission, request.principal!);
         const nextData = data ?? submission.data;
         const nextGame = game ?? submission.game;
+        if (nextGame && nextData.gameId !== nextGame.id) {
+          throw new Error("GAME_ID_MISMATCH");
+        }
         const attached = attachedPackage(submission);
         if (attached && nextGame && !packageMatchesGame(attached, nextGame)) {
           throw new Error("PACKAGE_METADATA_MISMATCH");
@@ -833,6 +840,11 @@ const knownErrors: Record<string, SafeErrorResponse> = {
     status: 409,
     code: "PACKAGE_METADATA_MISMATCH",
     message: "Attached package metadata does not match the game record."
+  },
+  GAME_ID_MISMATCH: {
+    status: 409,
+    code: "GAME_ID_MISMATCH",
+    message: "The submission game id does not match the catalog game record."
   },
   PACKAGE_HASH_MISMATCH: {
     status: 409,
